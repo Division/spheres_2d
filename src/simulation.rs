@@ -18,14 +18,14 @@ struct AABB {
 }
 
 const SIMD_VECTOR_SIZE : usize = 4;
-const UPDATE_INTERVAL : f32 = 1.0 / 30.0;
-const COLLISION_ITERATIONS : usize = 4;
-const COLLISION_RESPONSE_MULTIPLIER : f32 = 0.99;
-const MAX_PENETRATION : f32 = 0.07;
-const MAX_VELOCITY : f32 = 100.0;
-const DUMPING : f32 = 0.97;
-const CELL_SIZE : f32 = 10.0;
-const GRAVITY : f32 = 300.0;
+const UPDATE_INTERVAL : f32 = 1.0 / 120.0;
+const COLLISION_ITERATIONS : usize = 2;
+const COLLISION_RESPONSE_MULTIPLIER : f32 = 0.95;
+const MAX_PENETRATION : f32 = 0.15;
+const MAX_VELOCITY : f32 = 10.0;
+const DUMPING : f32 = 0.99;
+const CELL_SIZE : f32 = 5.0;
+const GRAVITY : f32 = 450.0;
 
 struct Particle {
     pub position_x : Vec<f32>,
@@ -131,7 +131,9 @@ impl Grid {
 
     pub fn add_particle(&mut self, position : Vec2, index : u32) {
         let cell_index = self.get_cell_index(self.position_to_cell(position));
-        self.cells[cell_index].particles.push(index);
+        //if self.cells[cell_index].particles.len() < 6 {
+            self.cells[cell_index].particles.push(index);
+        //}
 
         //print!("adding to grid {}, index = {}\n", self.position_to_cell(position), index);
     }
@@ -206,8 +208,6 @@ impl SimWorld {
             self.particles.position_y[i] += velocity.y * DUMPING;
             self.particles.prev_position_x[i] = prev_pos_x;
             self.particles.prev_position_y[i] = prev_pos_y;
-
-
         }
     }
     
@@ -256,6 +256,10 @@ impl SimWorld {
             for x in range.0.x..=range.1.x {
                 for y in range.0.y..=range.1.y {
                     //print!("Checking vs cell {}\n", UVec2::new(x, y));
+                    
+                    //let ux = x - range.0.x;
+                    //let uy = y - range.0.y;
+                    //if ux % 2 == 0 && uy % 2 == 0 { continue; }
 
                     for j in &self.grid.cells[self.grid.get_cell_index(UVec2::new(x, y))].particles {
                         let p1 = Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
@@ -312,24 +316,30 @@ impl SimWorld {
     pub fn tick(&mut self, dt : f32) {
         self.accumulated_dt += dt;
 
+        let now = Instant::now();
+        let mut elapsed = 0.0;
         loop {
             if self.accumulated_dt < UPDATE_INTERVAL {
                 break;
             }
-            let now = Instant::now();
 
             self.accumulated_dt -= UPDATE_INTERVAL;
             self.sim_apply_gravity(Vec2::new(0.0, -GRAVITY), UPDATE_INTERVAL);
             self.sim_move();
 
+            self.update_grid();
             for i in 0..COLLISION_ITERATIONS {
-                self.update_grid();
                 self.sim_collide();
                 self.sim_restrict_bounds();
             }
 
-            self.tick_duration = (now.elapsed().as_secs() as f64 + now.elapsed().subsec_nanos() as f64 * 1e-9) as f32;
+            elapsed = (now.elapsed().as_secs() as f64 + now.elapsed().subsec_nanos() as f64 * 1e-9) as f32;
+            if elapsed >= 1.0 / 30.0 {
+                break;
+            }
         }
+
+        self.tick_duration = elapsed;
     }
 
     pub fn get_tick_duration(&self) -> f32 { return self.tick_duration; }

@@ -5,9 +5,9 @@ use bevy::{
 use bevy_prototype_debug_lines::*;
 use bevy::window::CursorMoved;
 
-const SPHERE_COUNT : i32 = 8000;
+const SPHERE_COUNT : i32 = 10000;
 const ARENA_SIZE : (f32, f32) = (1000.0, 700.0);
-const SPRITE_RADIUS : f32 = 5.0;
+const SPRITE_RADIUS : f32 = 3.0;
 
 mod simulation;
 
@@ -20,7 +20,7 @@ struct MouseLoc(Vec2);
 struct TextChanges;
 
 fn main() {
-    let mut sim_world = simulation::SimWorld::new(ARENA_SIZE.0, ARENA_SIZE.1, 10000);
+    let mut sim_world = simulation::SimWorld::new(ARENA_SIZE.0, ARENA_SIZE.1, 100000);
 
     App::new()
         .add_plugins(DefaultPlugins)
@@ -153,7 +153,7 @@ fn some_system(mut lines: ResMut<DebugLines>, mut sim_world: ResMut<simulation::
     lines.line(end, Vec3::new(end.x, start.y, 0.0), 0.0);
 
     let sim_world = sim_world.as_mut();
-    sim_world.draw_grid(lines.as_mut());
+    //sim_world.draw_grid(lines.as_mut());
 }
 
 fn debug_info_system(
