@@ -10,6 +10,32 @@ use std::sync::Arc;
 use std::u32::MIN;
 use std::cmp;
 use std::time::{Duration, Instant};
+use lazy_static::lazy_static;
+use std::f32::consts::PI;
+
+const REST_DENS: f32 = 300.0;
+const GAS_CONST: f32 = 2000.0;
+const H: f32 = 16.0;
+const HSQ: f32 = H * H;
+const MASS: f32 = 2.5;
+//const MASS: f32 = H * H * H * REST_DENS;
+//const MASS: f32 = (2.0 / 3.0 * H) * (2.0 / 3.0 * H) * (2.0 / 3.0 * H) * REST_DENS;
+
+const VISC: f32 = 200.0 * 1.0;
+const DT: f32 = 0.0007 * 1.0;
+const EPS: f32 = H;
+const BOUND_DAMPING: f32 = -0.5;
+pub const WINDOW_WIDTH: u32 = 1200;
+pub const WINDOW_HEIGHT: u32 = 800;
+pub const VIEW_WIDTH: f32 = 1.5 * WINDOW_WIDTH as f32;
+pub const VIEW_HEIGHT: f32 = 1.5 * WINDOW_HEIGHT as f32;
+
+lazy_static! {
+    static ref G: Vec2 = Vec2::new(0.0, -9.81);
+    static ref POLY6: f32 = 4.0 / (PI * f32::powf(H, 8.0));
+    static ref SPIKY_GRAD: f32 = -10.0 / (PI * f32::powf(H, 5.0));
+    static ref VISC_LAP: f32 = 40.0 / (PI * f32::powf(H, 5.0));
+}
 
 #[derive(Default, Clone, Copy)]
 struct AABB {
@@ -18,18 +44,29 @@ struct AABB {
 }
 
 const SIMD_VECTOR_SIZE : usize = 4;
-const UPDATE_INTERVAL : f32 = 1.0 / 120.0;
+const UPDATE_INTERVAL : f32 = 1.0 / 160.0;
 const COLLISION_ITERATIONS : usize = 2;
 const COLLISION_RESPONSE_MULTIPLIER : f32 = 0.95;
 const MAX_PENETRATION : f32 = 0.15;
 const MAX_VELOCITY : f32 = 10.0;
 const DUMPING : f32 = 0.99;
-const CELL_SIZE : f32 = 5.0;
-const GRAVITY : f32 = 450.0;
+const CELL_SIZE : f32 = 2.0 * H;
+const GRAVITY : f32 = -9.81;
 
 struct Particle {
     pub position_x : Vec<f32>,
     pub position_y : Vec<f32>,
+
+    pub velocity_x : Vec<f32>,
+    pub velocity_y : Vec<f32>,
+
+    pub force_x : Vec<f32>,
+    pub force_y : Vec<f32>,
+
+    pub rho : Vec<f32>, // Density
+    pub p : Vec<f32>, // Pressure
+
+
     pub prev_position_x : Vec<f32>,
     pub prev_position_y : Vec<f32>,
     pub radius : Vec<f32>,
@@ -38,13 +75,16 @@ struct Particle {
 
 impl Particle {
     fn new(capacity : usize) -> Self {
-        const ALIGNMENT : usize = SIMD_VECTOR_SIZE * mem::size_of::<f32>();
-        let size = mem::size_of::<f32>() * capacity;
-        
         let mut p = Particle {
             alive_particles_count : 0,
             position_x: Vec::with_capacity(capacity),
             position_y: Vec::with_capacity(capacity),
+            velocity_x: Vec::with_capacity(capacity),
+            velocity_y: Vec::with_capacity(capacity),
+            force_x: Vec::with_capacity(capacity),
+            force_y: Vec::with_capacity(capacity),
+            rho: Vec::with_capacity(capacity),
+            p: Vec::with_capacity(capacity),
             prev_position_x: Vec::with_capacity(capacity),
             prev_position_y: Vec::with_capacity(capacity),
             radius: Vec::with_capacity(capacity),
@@ -52,6 +92,12 @@ impl Particle {
 
         p.position_x.resize(capacity, 0.0);
         p.position_y.resize(capacity, 0.0);
+        p.velocity_x.resize(capacity, 0.0);
+        p.velocity_y.resize(capacity, 0.0);
+        p.force_x.resize(capacity, 0.0);
+        p.force_y.resize(capacity, 0.0);
+        p.rho.resize(capacity, 0.0);
+        p.p.resize(capacity, 0.0);
         p.prev_position_x.resize(capacity, 0.0);
         p.prev_position_y.resize(capacity, 0.0);
         p.radius.resize(capacity, 0.0);
@@ -69,6 +115,10 @@ impl Particle {
 
         self.position_x[index] = position.x;
         self.position_y[index] = position.y;
+        self.velocity_x[index] = velocity.x;
+        self.velocity_y[index] = velocity.y;
+        self.rho[index] = 1.0;
+
         self.prev_position_x[index] = prev_pos.x;
         self.prev_position_y[index] = prev_pos.y;
         self.radius[index] = radius;
@@ -183,11 +233,13 @@ impl SimWorld {
         self.particles.add_particle(position, velocity, radius);
     }
 
-    fn sim_apply_gravity(&mut self, g : Vec2, dt : f32) {
+    fn sim_apply_force(&mut self, dt : f32) {
+        let dt_sqr = dt * dt;
         for i in 0..self.particles.alive_particles_count as usize {
-            let g = g * dt * dt;
-            self.particles.prev_position_x[i] -= g.x;
-            self.particles.prev_position_y[i] -= g.y;
+            let force_x = self.particles.force_x[i] * dt_sqr;// self.particles.rho[i];
+            let force_y = self.particles.force_y[i] * dt_sqr;// / self.particles.rho[i];
+            self.particles.prev_position_x[i] -= force_x;
+            self.particles.prev_position_y[i] -= force_y;
         }
     }
 
@@ -208,6 +260,33 @@ impl SimWorld {
             self.particles.position_y[i] += velocity.y * DUMPING;
             self.particles.prev_position_x[i] = prev_pos_x;
             self.particles.prev_position_y[i] = prev_pos_y;
+        }
+    }
+
+    fn sim_move_vel(&mut self, dt : f32) {
+        for i in 0..self.particles.alive_particles_count as usize {
+            
+            self.particles.velocity_x[i] += dt * self.particles.force_x[i] / self.particles.rho[i];
+            self.particles.velocity_y[i] += dt * self.particles.force_y[i] / self.particles.rho[i];
+            self.particles.position_x[i] += dt * self.particles.velocity_x[i];
+            self.particles.position_y[i] += dt * self.particles.velocity_y[i];
+
+            if self.particles.position_x[i] - EPS < self.bounds.min.x {
+                self.particles.velocity_x[i] *= BOUND_DAMPING;
+                self.particles.position_x[i] = self.bounds.min.x + EPS;
+            }
+            if self.particles.position_x[i] + EPS > self.bounds.max.x {
+                self.particles.velocity_x[i] *= BOUND_DAMPING;
+                self.particles.position_x[i] = self.bounds.max.x - EPS;
+            }
+            if self.particles.position_y[i] - EPS < self.bounds.min.y {
+                self.particles.velocity_y[i] *= BOUND_DAMPING;
+                self.particles.position_y[i] = self.bounds.min.y + EPS;
+            }
+            if self.particles.position_y[i] + EPS > self.bounds.max.y {
+                self.particles.velocity_y[i] *= BOUND_DAMPING;
+                self.particles.position_y[i] = self.bounds.max.y - EPS;
+            }
         }
     }
     
@@ -298,9 +377,11 @@ impl SimWorld {
             panic!("particle index out of range");
         }
         let pos = Vec2::new(self.particles.position_x[index], self.particles.position_y[index]);
-        let prev_pos = Vec2::new(self.particles.prev_position_x[index], self.particles.prev_position_y[index]);
+        //let prev_pos = Vec2::new(self.particles.prev_position_x[index], self.particles.prev_position_y[index]);
 
-        return prev_pos + (pos - prev_pos) * (self.accumulated_dt / UPDATE_INTERVAL);
+        return pos;
+
+        //return prev_pos + (pos - prev_pos) * (self.accumulated_dt / UPDATE_INTERVAL);
     }
 
     pub fn get_collision_iterations(&self) -> u32 { COLLISION_ITERATIONS as u32 }
@@ -310,6 +391,112 @@ impl SimWorld {
         self.grid.clear();
         for i in 0..self.particles.alive_particles_count as usize {
             self.grid.add_particle(Vec2::new(self.particles.position_x[i], self.particles.position_y[i]), i as u32);
+        }
+    }
+
+    pub fn compute_density_pressure(&mut self) {
+        for i in 0..self.particles.alive_particles_count as usize {
+            let p1 = Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
+            let cell_position = self.grid.position_to_cell(p1);
+            let range = self.grid.get_adjacent_range(cell_position);
+
+            let mut rho = 0.0f32;
+
+            for x in range.0.x..=range.1.x {
+                for y in range.0.y..=range.1.y {
+                    //print!("Checking vs cell {}\n", UVec2::new(x, y));
+                    
+                    //let ux = x - range.0.x;
+                    //let uy = y - range.0.y;
+                    //if ux % 2 == 0 && uy % 2 == 0 { continue; }
+
+                    for j in &self.grid.cells[self.grid.get_cell_index(UVec2::new(x, y))].particles {
+                        let p1 = Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
+
+                        let j = *j as usize;
+                        //if i != j {
+                            let p2 = Vec2::new(self.particles.position_x[j], self.particles.position_y[j]);
+                            let delta = p2 - p1;
+                            let sq_distance = delta.length_squared();
+                            if (sq_distance < HSQ) {
+                                rho += MASS * *POLY6 * f32::powf(HSQ - sq_distance, 3.0);
+                            }
+                        //}
+                    }
+                }
+            }
+
+            self.particles.rho[i] = rho;
+            self.particles.p[i] = GAS_CONST * (rho - REST_DENS);
+        }
+    }
+
+    pub fn compute_forces(&mut self, dt : f32)
+    {
+        /*for i in 0..self.particles.alive_particles_count as usize {
+           self.particles.force_x[i] = 0.0;
+           self.particles.force_y[i] = -GRAVITY;
+        }*/
+
+        for i in 0..self.particles.alive_particles_count as usize {
+            let p1 = Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
+
+            // let velocity1 = 1.0 / dt * Vec2::new(self.particles.position_x[i] - self.particles.prev_position_x[i], self.particles.position_y[i] - self.particles.prev_position_y[i]);
+            let velocity1 = Vec2::new(self.particles.velocity_x[i], self.particles.velocity_y[i]);
+
+            let cell_position = self.grid.position_to_cell(p1);
+            let range = self.grid.get_adjacent_range(cell_position);
+
+            let mut pressure_force = Vec2::new(0.0, 0.0);
+            let mut viscosity_force = Vec2::new(0.0, 0.0);
+            
+            for x in range.0.x..=range.1.x {
+                for y in range.0.y..=range.1.y {
+                    //print!("Checking vs cell {}\n", UVec2::new(x, y));
+                    
+                    //let ux = x - range.0.x;
+                    //let uy = y - range.0.y;
+                    //if ux % 2 == 0 && uy % 2 == 0 { continue; }
+
+                    for j in &self.grid.cells[self.grid.get_cell_index(UVec2::new(x, y))].particles {
+                        let p1 = Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
+
+                        let j = *j as usize;
+                        if i != j {
+                            let p2 = Vec2::new(self.particles.position_x[j], self.particles.position_y[j]);
+                            let delta = p2 - p1;
+                            let distance = delta.length();
+                            if (distance < H) {
+
+                                // let velocity2 = 1.0 / dt * Vec2::new(self.particles.position_x[j] - self.particles.prev_position_x[j], self.particles.position_y[j] - self.particles.prev_position_y[j]);
+                                let velocity2 = Vec2::new(self.particles.velocity_x[j], self.particles.velocity_y[j]);
+
+                                let mut v = -delta;
+                                if distance > 1e-6 {
+                                    v /= distance;
+                                    pressure_force += v * MASS * (self.particles.p[i] + self.particles.p[j]) / (2.0 * self.particles.rho[j])
+                                    * *SPIKY_GRAD
+                                    * f32::powf(H - distance, 3.0);
+                                } else
+                                {
+                                    self.particles.position_x[i] += 1.0;
+                                }
+                                viscosity_force += VISC * MASS * (velocity2 - velocity1) / self.particles.rho[j] * *VISC_LAP * (H - distance);
+                            }
+                       }
+                    }
+                }
+            }
+
+            //let fgrav = G * MASS / pi.rho;
+            //pf.f = fpress + fvisc + fgrav;
+            //Vector2d fgrav = G * MASS / pi.rho;
+            //pi.f = fpress + fvisc + fgrav;
+
+            let gravity_force = Vec2::new(0.0, GRAVITY) * MASS / self.particles.rho[i];
+            let total_force = pressure_force + viscosity_force + gravity_force;
+            self.particles.force_x[i] += total_force.x;
+            self.particles.force_y[i] += total_force.y;
         }
     }
 
@@ -324,14 +511,18 @@ impl SimWorld {
             }
 
             self.accumulated_dt -= UPDATE_INTERVAL;
-            self.sim_apply_gravity(Vec2::new(0.0, -GRAVITY), UPDATE_INTERVAL);
-            self.sim_move();
-
+            
             self.update_grid();
-            for i in 0..COLLISION_ITERATIONS {
+            self.compute_density_pressure();
+            self.compute_forces(DT);
+            //self.sim_apply_force(DT);
+            //self.sim_move();
+            self.sim_move_vel(DT);
+            self.sim_restrict_bounds();
+            self.clear_force();
+            /*for i in 0..COLLISION_ITERATIONS {
                 self.sim_collide();
-                self.sim_restrict_bounds();
-            }
+            }*/
 
             elapsed = (now.elapsed().as_secs() as f64 + now.elapsed().subsec_nanos() as f64 * 1e-9) as f32;
             if elapsed >= 1.0 / 30.0 {
@@ -342,10 +533,17 @@ impl SimWorld {
         self.tick_duration = elapsed;
     }
 
+    pub fn clear_force(&mut self) {
+        for i in 0..self.particles.alive_particles_count as usize {
+            self.particles.force_x[i] = 0.0;
+            self.particles.force_y[i] = 0.0;
+        }
+    }
+
     pub fn get_tick_duration(&self) -> f32 { return self.tick_duration; }
 
     pub fn apply_force_to_point(&mut self, position : Vec2, radius : f32, strength: f32, dt : f32) {
-        let sq_radius = radius * radius;
+        let sq_radius = radius * radius * 5.0;
         
         for i in 0..self.particles.alive_particles_count as usize {
             let delta = position - Vec2::new(self.particles.position_x[i], self.particles.position_y[i]);
@@ -358,6 +556,8 @@ impl SimWorld {
 
                 self.particles.prev_position_x[i] -= force.x;
                 self.particles.prev_position_y[i] -= force.y;
+                self.particles.force_x[i] += force.x * 100000.0;
+                self.particles.force_y[i] += force.y * 100000.0;
             }
         }
     }

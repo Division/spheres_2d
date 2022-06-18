@@ -5,9 +5,9 @@ use bevy::{
 use bevy_prototype_debug_lines::*;
 use bevy::window::CursorMoved;
 
-const SPHERE_COUNT : i32 = 10000;
+const SPHERE_COUNT : i32 = 2500;
 const ARENA_SIZE : (f32, f32) = (1000.0, 700.0);
-const SPRITE_RADIUS : f32 = 3.0;
+const SPRITE_RADIUS : f32 = 8.0;
 
 mod simulation;
 
@@ -65,11 +65,11 @@ fn setup(mut commands: Commands, mut sim_world: ResMut<simulation::SimWorld>, as
 
     for i in 0..SPHERE_COUNT {
         let mut t = Transform::identity();
-        let pos = Vec2::new((i % 50) as f32 * SPRITE_RADIUS * 2.0, (i / 50) as f32 * SPRITE_RADIUS * 2.0) - half_size + offset;
+        let pos = Vec2::new((i % 50) as f32 * SPRITE_RADIUS * 1.0, (i / 50) as f32 * SPRITE_RADIUS * 1.0) - half_size + offset;
         t.translation.x = pos.x;
         t.translation.y = pos.y;
 
-        sim_world.add_particle(pos, Vec2::new(0.5, -1.0), SPRITE_RADIUS);
+        sim_world.add_particle(pos, Vec2::new(0.0, 0.0), SPRITE_RADIUS);
 
         commands.spawn_bundle(SpriteBundle {
             sprite: Sprite { custom_size: Some(Vec2::new(SPRITE_RADIUS * 2.0, SPRITE_RADIUS * 2.0)), ..default()},
